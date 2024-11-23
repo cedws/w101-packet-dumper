@@ -36,27 +36,43 @@ import (
 )
 
 func main() {
-	filename := flag.String("file", "", "path to the file to read")
+	var (
+		inFilename  = flag.String("in", "", "path to the file to read")
+		outFilename = flag.String("out", "", "path to the file to write")
+	)
 	flag.Parse()
 
-	if filename == nil || *filename == "" {
+	if inFilename == nil || *inFilename == "" {
 		flag.Usage()
 		os.Exit(1)
 	}
 
-	if err := decode(os.Stdout, *filename); err != nil {
+	out := os.Stdout
+
+	if outFilename != nil && *outFilename != "" {
+		var err error
+
+		out, err = os.Create(*outFilename)
+		if err != nil {
+			log.Fatalf("error creating output file: %v", err)
+		}
+
+		defer out.Close()
+	}
+
+	in, err := os.Open(*inFilename)
+	if err != nil {
+		log.Fatalf("error opening input file: %v", err)
+	}
+	defer in.Close()
+
+	if err := decodeTo(out, in); err != nil {
 		log.Fatalf("error during decoding: %v", err)
 	}
 }
 
-func decode(w io.Writer, filename string) error {
-	file, err := os.Open(filename)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	frameReader := proto.FrameReader{Reader: file}
+func decodeTo(w io.Writer, r io.Reader) error {
+	frameReader := proto.FrameReader{Reader: r}
 
 	router := proto.NewMessageRouter()
 	registerAll(router)
@@ -78,21 +94,28 @@ func decode(w io.Writer, filename string) error {
 		messageCount++
 	})
 
+	frameCh := make(chan *proto.Frame, 4)
+
+	go func() {
+		for {
+			frame, err := frameReader.Read()
+			if err != nil {
+				break
+			}
+
+			if frame.Control {
+				continue
+			}
+
+			frameCh <- frame
+		}
+
+		close(frameCh)
+	}()
+
 	start := time.Now()
 
-	for {
-		frame, err := frameReader.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("error reading frame: %w", err)
-		}
-
-		if frame.Control {
-			continue
-		}
-
+	for frame := range frameCh {
 		var dmlMessage proto.DMLMessage
 
 		if err := dmlMessage.Unmarshal(frame.MessageData); err != nil {
