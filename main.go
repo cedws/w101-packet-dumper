@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"reflect"
+	"time"
 
 	"github.com/cedws/w101-client-go/proto"
 	"github.com/cedws/w101-proto-go/pkg/aisclient"
@@ -43,12 +44,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := decode(*filename); err != nil {
+	if err := decode(os.Stdout, *filename); err != nil {
 		log.Fatalf("error during decoding: %v", err)
 	}
 }
 
-func decode(filename string) error {
+func decode(w io.Writer, filename string) error {
 	file, err := os.Open(filename)
 	if err != nil {
 		return err
@@ -60,8 +61,10 @@ func decode(filename string) error {
 	router := proto.NewMessageRouter()
 	registerAll(router)
 
-	enc := json.NewEncoder(os.Stdout)
+	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
+
+	var messageCount int
 
 	proto.RegisterMiddleware(router, func(message any) {
 		type m struct {
@@ -72,7 +75,10 @@ func decode(filename string) error {
 			Name:    reflect.TypeOf(message).Name(),
 			Message: message,
 		})
+		messageCount++
 	})
+
+	start := time.Now()
 
 	for {
 		frame, err := frameReader.Read()
@@ -97,6 +103,11 @@ func decode(filename string) error {
 			return fmt.Errorf("error during handling of dml message (service %d, order %d): %w", dmlMessage.ServiceID, dmlMessage.OrderNumber, err)
 		}
 	}
+
+	elapsed := time.Since(start)
+	messagesPerSec := int(float64(messageCount) / elapsed.Seconds())
+
+	log.Printf("Decoded %d messages in %s (%d messages/sec)\n", messageCount, elapsed, messagesPerSec)
 
 	return nil
 }
